@@ -1,0 +1,7 @@
+venv/
+.env
+__pycache__/
+*.pyc
+data/google-service-account.json
+api_keys.txt
+.DS_Store
