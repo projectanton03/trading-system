@@ -23,10 +23,29 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 # Google Drive
-GOOGLE_SERVICE_ACCOUNT_FILE = os.environ.get(
-    'GOOGLE_SERVICE_ACCOUNT_FILE',
-    str(BASE_DIR / 'data' / 'google-service-account.json')
-)
+import base64
+import json
+
+# Google Drive - Handle both file and base64 encoding
+GOOGLE_SERVICE_ACCOUNT_BASE64 = os.environ.get('GOOGLE_SERVICE_ACCOUNT_BASE64')
+
+if GOOGLE_SERVICE_ACCOUNT_BASE64:
+    # Decode base64 and save to temp file
+    import tempfile
+    decoded = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_BASE64)
+    
+    # Create temp file
+    temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
+    temp_file.write(decoded.decode('utf-8'))
+    temp_file.close()
+    
+    GOOGLE_SERVICE_ACCOUNT_FILE = temp_file.name
+else:
+    # Fallback to local file
+    GOOGLE_SERVICE_ACCOUNT_FILE = os.environ.get(
+        'GOOGLE_SERVICE_ACCOUNT_FILE',
+        str(BASE_DIR / 'data' / 'google-service-account.json')
+    )
 
 #═══════════════════════════════════════════════════════════════════════════════
 # GOOGLE DRIVE FOLDER IDS
