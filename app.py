@@ -118,21 +118,18 @@ def health():
 def list_drive_folder(folder_type):
     """
     List files in a Google Drive folder
-    
-    Usage: GET /drive/list/macro_leading
-           GET /drive/list/portfolio_mgmt
     """
     try:
         folder_id = config.DRIVE_FOLDERS.get(folder_type)
-        
+
         if not folder_id:
             return jsonify({
                 'error': f'Unknown folder type: {folder_type}',
                 'available_types': list(config.DRIVE_FOLDERS.keys())
             }), 400
-        
+
         files = google_drive.list_files_in_folder(folder_id)
-        
+
         return jsonify({
             'folder_type': folder_type,
             'folder_id': folder_id,
@@ -140,21 +137,27 @@ def list_drive_folder(folder_type):
             'files': files,
             'status': 'success'
         })
-        
+
     except Exception as e:
         logger.error(f"Error listing folder: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/drive/read/<file_id>')
 def read_excel_file(file_id):
     """
     Read Excel file from Google Drive
-    
-    Usage: GET /drive/read/1aBcDeFg...
     """
     try:
-        df = excel_handler.read_excel_from_drive(file_id)
-        
+        if not google_drive:
+            return jsonify({'error': 'Google Drive not available'}), 500
+
+        # 🔥 Download file as raw bytes
+        file_bytes = google_drive.download_file_as_bytes(file_id)
+
+        # 🔥 Convert bytes to dataframe
+        df = excel_handler.read_excel_from_drive(file_bytes)
+
         return jsonify({
             'file_id': file_id,
             'rows': len(df),
@@ -162,34 +165,30 @@ def read_excel_file(file_id):
             'preview': df.head(10).to_dict('records'),
             'status': 'success'
         })
-        
+
     except Exception as e:
         logger.error(f"Error reading file {file_id}: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/templates/test-update', methods=['POST'])
 def test_template_update():
     """
     Test updating a template in Google Drive
-    
-    POST body:
-    {
-        "file_id": "...",
-        "sheet_name": "Data",
-        "cell": "A1",
-        "value": "Test Update"
-    }
     """
     try:
         data = request.get_json()
-        
+
         file_id = data.get('file_id')
         sheet_name = data.get('sheet_name', 'Sheet1')
         cell = data.get('cell', 'A1')
-        value = data.get('value', f'Updated {datetime.now().isoformat()}')
-        
+        value = data.get('value')
+
+        if not value:
+            value = f'Updated {datetime.now().isoformat()}'
+
         excel_handler.update_cell_in_drive(file_id, sheet_name, cell, value)
-        
+
         return jsonify({
             'message': f'Cell {cell} updated successfully',
             'file_id': file_id,
@@ -197,10 +196,11 @@ def test_template_update():
             'new_value': value,
             'status': 'success'
         })
-        
+
     except Exception as e:
         logger.error(f"Error updating template: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 #═══════════════════════════════════════════════════════════════════════════════
 # MACRO DATA ENDPOINTS (Week 1-2 implementation)
