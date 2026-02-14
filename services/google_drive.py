@@ -280,3 +280,24 @@ def create_folder(folder_name, parent_folder_id=None):
     except HttpError as e:
         logger.error(f"Error creating folder: {e}")
         raise
+def download_file_as_bytes(file_id):
+    """
+    Download file from Google Drive and return raw bytes
+    """
+    try:
+        service = get_drive_service()
+        request = service.files().get_media(fileId=file_id)
+
+        file_stream = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_stream, request)
+
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+
+        file_stream.seek(0)
+        return file_stream.read()
+
+    except HttpError as e:
+        logger.error(f"Error downloading file {file_id}: {e}")
+        raise
