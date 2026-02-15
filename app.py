@@ -143,6 +143,9 @@ def list_drive_folder(folder_type):
         return jsonify({'error': str(e)}), 500
 
 
+import numpy as np
+import pandas as pd
+
 @app.route('/drive/read/<file_id>')
 def read_excel_file(file_id):
     """
@@ -152,17 +155,23 @@ def read_excel_file(file_id):
         if not google_drive:
             return jsonify({'error': 'Google Drive not available'}), 500
 
-        # 🔥 Download file as raw bytes
+        # Download file
         file_bytes = google_drive.download_file_as_bytes(file_id)
 
-        # 🔥 Convert bytes to dataframe
+        # Convert to dataframe
         df = excel_handler.read_excel_from_drive(file_bytes)
+
+        # 🔥 CRITICAL FIX — Make dataframe JSON safe
+        df = df.replace({np.nan: None})
+        df = df.where(pd.notnull(df), None)
+
+        preview = df.head(10).to_dict('records')
 
         return jsonify({
             'file_id': file_id,
-            'rows': len(df),
+            'rows': int(len(df)),
             'columns': list(df.columns),
-            'preview': df.head(10).to_dict('records'),
+            'preview': preview,
             'status': 'success'
         })
 
