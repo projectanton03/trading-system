@@ -5,6 +5,8 @@ Centralized configuration management
 
 import os
 from pathlib import Path
+import base64
+import json
 
 # Base directory
 BASE_DIR = Path(__file__).resolve().parent
@@ -22,9 +24,9 @@ FRED_API_KEY = os.environ.get('FRED_API_KEY')
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
-# Google Drive
-import base64
-import json
+#═══════════════════════════════════════════════════════════════════════════════
+# GOOGLE DRIVE AUTHENTICATION
+#═══════════════════════════════════════════════════════════════════════════════
 
 # Google Drive - Handle both file and base64 encoding
 GOOGLE_SERVICE_ACCOUNT_BASE64 = os.environ.get('GOOGLE_SERVICE_ACCOUNT_BASE64')
@@ -32,20 +34,29 @@ GOOGLE_SERVICE_ACCOUNT_BASE64 = os.environ.get('GOOGLE_SERVICE_ACCOUNT_BASE64')
 if GOOGLE_SERVICE_ACCOUNT_BASE64:
     # Decode base64 and save to temp file
     import tempfile
-    decoded = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_BASE64)
     
-    # Create temp file
-    temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json')
-    temp_file.write(decoded.decode('utf-8'))
-    temp_file.close()
-    
-    GOOGLE_SERVICE_ACCOUNT_FILE = temp_file.name
+    try:
+        decoded = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_BASE64)
+        
+        # Create a persistent temp file
+        fd, temp_path = tempfile.mkstemp(suffix='.json', text=True)
+        
+        with os.fdopen(fd, 'w') as temp_file:
+            temp_file.write(decoded.decode('utf-8'))
+        
+        GOOGLE_SERVICE_ACCOUNT_FILE = temp_path
+        print(f"✅ Google service account loaded from base64 → {temp_path}")
+        
+    except Exception as e:
+        print(f"❌ Error decoding GOOGLE_SERVICE_ACCOUNT_BASE64: {e}")
+        GOOGLE_SERVICE_ACCOUNT_FILE = str(BASE_DIR / 'data' / 'google-service-account.json')
 else:
     # Fallback to local file
     GOOGLE_SERVICE_ACCOUNT_FILE = os.environ.get(
         'GOOGLE_SERVICE_ACCOUNT_FILE',
         str(BASE_DIR / 'data' / 'google-service-account.json')
     )
+    print(f"📁 Using local service account file: {GOOGLE_SERVICE_ACCOUNT_FILE}")
 
 #═══════════════════════════════════════════════════════════════════════════════
 # GOOGLE DRIVE FOLDER IDS
@@ -57,7 +68,7 @@ DRIVE_FOLDERS = {
     'macro_leading': os.environ.get('DRIVE_MACRO_LEADING', '15HzzWo006M1_JZI0Q9z72hbPkiOqQ2Qs'),
     'macro_coincident': os.environ.get('DRIVE_MACRO_COINCIDENT', '1AEiZ7kl6daGBBk9d524ooMV0cr14M6t2'),
     'macro_international': os.environ.get('DRIVE_MACRO_INTL', '1Aq4fBvJ1Fxd_6STL-olz1zuCeHsW9y40'),
-    'macro_reference analysis': os.environ.get('DRIVE_MACRO_INTL', '1fC4Ms-NRcYvqq--qbuzgu9FFbR_Myd6X'),
+    'macro_reference_analysis': os.environ.get('DRIVE_MACRO_REF', '1fC4Ms-NRcYvqq--qbuzgu9FFbR_Myd6X'),
     
     # Portfolio Management
     'portfolio_mgmt': os.environ.get('DRIVE_PORTFOLIO', '1KELQPhWMZQ6SArUdxHxLyFuxlK4p3IYK'),
@@ -277,9 +288,18 @@ def validate_config():
         if not key_value:
             errors.append(f"Missing required environment variable: {key_name}")
     
-    # Check Google service account file
-    if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_FILE):
-        errors.append(f"Google service account file not found: {GOOGLE_SERVICE_ACCOUNT_FILE}")
+    # Check Google service account
+    if GOOGLE_SERVICE_ACCOUNT_BASE64:
+        # Using base64 - validate it decodes properly
+        try:
+            decoded = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_BASE64)
+            json.loads(decoded)  # Ensure valid JSON
+        except Exception as e:
+            errors.append(f"Invalid GOOGLE_SERVICE_ACCOUNT_BASE64: {e}")
+    else:
+        # Using file path - check it exists
+        if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_FILE):
+            errors.append(f"Google service account file not found: {GOOGLE_SERVICE_ACCOUNT_FILE}")
     
     # Warnings for folder IDs (not critical for initial setup)
     if all(v == 'UPDATE_ME' for v in DRIVE_FOLDERS.values()):
