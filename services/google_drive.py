@@ -18,7 +18,7 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 
 def get_drive_service():
     """
-    Create and return Google Drive service object
+    Create and return Google Drive service object with SSL cert handling
     
     Returns:
         Google Drive API service object
@@ -26,14 +26,23 @@ def get_drive_service():
     try:
         # Import config here to avoid circular imports
         import config
+        import certifi
+        import httplib2
         
         credentials = service_account.Credentials.from_service_account_file(
             config.GOOGLE_SERVICE_ACCOUNT_FILE,
             scopes=SCOPES
         )
         
-        service = build('drive', 'v3', credentials=credentials)
-        logger.info("Google Drive service created successfully")
+        # Create HTTP client with proper SSL certificates
+        http = httplib2.Http(
+            ca_certs=certifi.where(),
+            disable_ssl_certificate_validation=False
+        )
+        
+        # Build service with custom HTTP client
+        service = build('drive', 'v3', credentials=credentials, http=http)
+        logger.info("Google Drive service created successfully with SSL certs")
         return service
         
     except Exception as e:
@@ -113,7 +122,7 @@ def download_file(file_id, local_path):
         request = service.files().get_media(fileId=file_id)
         
         # Ensure directory exists
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        os.makedirs(os.path.dirname(local_path) if os.path.dirname(local_path) else '.', exist_ok=True)
         
         with open(local_path, 'wb') as f:
             downloader = MediaIoBaseDownload(f, request)
@@ -280,6 +289,7 @@ def create_folder(folder_name, parent_folder_id=None):
     except HttpError as e:
         logger.error(f"Error creating folder: {e}")
         raise
+
 def download_file_as_bytes(file_id):
     """
     Download file from Google Drive and return raw bytes
