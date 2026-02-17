@@ -145,6 +145,7 @@ def list_drive_folder(folder_type):
 
 import numpy as np
 import pandas as pd
+from io import BytesIO
 
 @app.route('/drive/read/<file_id>')
 def read_excel_file(file_id):
@@ -155,22 +156,25 @@ def read_excel_file(file_id):
         if not google_drive:
             return jsonify({'error': 'Google Drive not available'}), 500
 
-        # Download file
+        # Download file as binary bytes
         file_bytes = google_drive.download_file_as_bytes(file_id)
 
-        # Convert to dataframe
-        df = excel_handler.read_excel_from_drive(file_bytes)
+        # Read directly from bytes using BytesIO - NO utf-8 decode!
+        df = pd.read_excel(BytesIO(file_bytes), sheet_name=0)
 
-        # 🔥 CRITICAL FIX — Make dataframe JSON safe
+        # Make dataframe JSON safe
         df = df.replace({np.nan: None})
         df = df.where(pd.notnull(df), None)
+
+        # Convert columns to strings (handles special types)
+        columns = [str(c) for c in df.columns]
 
         preview = df.head(10).to_dict('records')
 
         return jsonify({
             'file_id': file_id,
             'rows': int(len(df)),
-            'columns': list(df.columns),
+            'columns': columns,
             'preview': preview,
             'status': 'success'
         })
