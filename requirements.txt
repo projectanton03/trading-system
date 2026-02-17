@@ -1,4 +1,4 @@
-setuptools==69.0.3
+setuptools>=68.0.0
 flask==3.0.0
 gunicorn==21.2.0
 requests==2.31.0
@@ -9,7 +9,6 @@ google-auth-httplib2==0.1.1
 google-api-python-client==2.100.0
 httplib2==0.22.0
 openpyxl==3.1.2
-numpy==1.24.3
-pandas==2.0.3
-certifi==2023.7.22
-urllib3==1.26.18
+numpy==1.26.4
+pandas==2.1.4
+certifi>=2023.7.22
