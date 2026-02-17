@@ -6,297 +6,243 @@ Functions for reading/writing Excel files to/from Google Drive
 import os
 import io
 import logging
+import requests
 from google.oauth2 import service_account
-from google.auth.transport.requests import AuthorizedSession
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from googleapiclient.http import MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
-# Scopes for Google Drive access
 SCOPES = ['https://www.googleapis.com/auth/drive']
+
+def get_credentials():
+    """Get and refresh service account credentials"""
+    import config
+    credentials = service_account.Credentials.from_service_account_file(
+        config.GOOGLE_SERVICE_ACCOUNT_FILE,
+        scopes=SCOPES
+    )
+    # Refresh credentials to get access token
+    credentials.refresh(Request())
+    return credentials
 
 def get_drive_service():
     """
     Create and return Google Drive service object
-    
-    Returns:
-        Google Drive API service object
     """
     try:
-        import config
-        
-        credentials = service_account.Credentials.from_service_account_file(
-            config.GOOGLE_SERVICE_ACCOUNT_FILE,
-            scopes=SCOPES
-        )
-        
-        # Build service using credentials only (no custom http)
+        credentials = get_credentials()
         service = build('drive', 'v3', credentials=credentials)
         logger.info("Google Drive service created successfully")
         return service
-        
     except Exception as e:
         logger.error(f"Failed to create Google Drive service: {e}")
         raise
 
 def test_drive_connection():
-    """
-    Test Google Drive connection
-    
-    Returns:
-        tuple: (success: bool, message: str)
-    """
+    """Test Google Drive connection"""
     try:
         service = get_drive_service()
         results = service.files().list(
             pageSize=1,
             fields="files(id, name)"
         ).execute()
-        
         logger.info("Google Drive connection test successful")
         return True, "Google Drive connection successful"
-        
     except Exception as e:
         error_msg = f"Google Drive connection failed: {str(e)}"
         logger.error(error_msg)
         return False, error_msg
 
 def list_files_in_folder(folder_id, file_type=None):
-    """
-    List all files in a Google Drive folder
-    
-    Args:
-        folder_id: Google Drive folder ID
-        file_type: Optional MIME type filter
-    
-    Returns:
-        list: List of file dictionaries with id, name, mimeType
-    """
+    """List all files in a Google Drive folder"""
     try:
         service = get_drive_service()
-        
         query = f"'{folder_id}' in parents and trashed=false"
         if file_type:
             query += f" and mimeType='{file_type}'"
-        
         results = service.files().list(
             q=query,
             fields="files(id, name, mimeType, modifiedTime, size)",
             orderBy="name"
         ).execute()
-        
         files = results.get('files', [])
         logger.info(f"Found {len(files)} files in folder {folder_id}")
         return files
-        
     except HttpError as e:
         logger.error(f"Error listing folder {folder_id}: {e}")
+        raise
+
+def download_file_as_bytes(file_id):
+    """
+    Download file from Google Drive using requests library
+    (More reliable SSL handling than googleapiclient)
+    """
+    try:
+        # Get fresh credentials with access token
+        credentials = get_credentials()
+        access_token = credentials.token
+
+        # Use requests library for download (better SSL support)
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=60,
+            stream=True
+        )
+        response.raise_for_status()
+
+        content = response.content
+        logger.info(f"File {file_id} downloaded successfully ({len(content)} bytes)")
+        return content
+
+    except Exception as e:
+        logger.error(f"Error downloading file {file_id}: {e}")
         raise
 
 def download_file(file_id, local_path):
     """
     Download file from Google Drive to local path
-    
-    Args:
-        file_id: Google Drive file ID
-        local_path: Local path to save file
-    
-    Returns:
-        str: Path to downloaded file
     """
     try:
-        service = get_drive_service()
-        
-        request = service.files().get_media(fileId=file_id)
-        
+        content = download_file_as_bytes(file_id)
+
         # Ensure directory exists
         dir_path = os.path.dirname(local_path)
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
-        
+
         with open(local_path, 'wb') as f:
-            downloader = MediaIoBaseDownload(f, request)
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
-                if status:
-                    logger.debug(f"Download progress: {int(status.progress() * 100)}%")
-        
-        logger.info(f"File {file_id} downloaded to {local_path}")
+            f.write(content)
+
+        logger.info(f"File {file_id} saved to {local_path}")
         return local_path
-        
-    except HttpError as e:
-        logger.error(f"Error downloading file {file_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"Error saving file {file_id}: {e}")
         raise
 
 def upload_file(local_path, file_id=None, folder_id=None, file_name=None):
     """
-    Upload file to Google Drive (update existing or create new)
-    
-    Args:
-        local_path: Path to local file
-        file_id: Optional - Google Drive file ID to update
-        folder_id: Optional - Folder ID for new files
-        file_name: Optional - Name for file
-    
-    Returns:
-        dict: Uploaded file metadata
+    Upload file to Google Drive using requests library
     """
     try:
-        service = get_drive_service()
-        
+        credentials = get_credentials()
+        access_token = credentials.token
+
         if not file_name:
             file_name = os.path.basename(local_path)
-        
-        mime_type = None
+
+        mime_type = 'application/octet-stream'
         if local_path.endswith('.xlsx') or local_path.endswith('.xlsm'):
             mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        
-        media = MediaFileUpload(
-            local_path,
-            mimetype=mime_type,
-            resumable=True
-        )
-        
+
+        with open(local_path, 'rb') as f:
+            file_content = f.read()
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+
         if file_id:
-            updated_file = service.files().update(
-                fileId=file_id,
-                media_body=media,
-                fields='id, name, modifiedTime'
-            ).execute()
+            # Update existing file
+            url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media"
+            response = requests.patch(
+                url,
+                headers={**headers, "Content-Type": mime_type},
+                data=file_content,
+                timeout=120
+            )
+            response.raise_for_status()
             logger.info(f"File {file_id} updated successfully")
-            return updated_file
+            return response.json()
         else:
-            file_metadata = {'name': file_name}
+            # Create new file - metadata first
+            import json
+            metadata = {"name": file_name}
             if folder_id:
-                file_metadata['parents'] = [folder_id]
-            
-            created_file = service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id, name, modifiedTime'
-            ).execute()
-            logger.info(f"File created: {created_file['id']}")
-            return created_file
-            
-    except HttpError as e:
+                metadata["parents"] = [folder_id]
+
+            # Multipart upload
+            boundary = "boundary_trading_system"
+            body = (
+                f"--{boundary}\r\n"
+                f"Content-Type: application/json\r\n\r\n"
+                f"{json.dumps(metadata)}\r\n"
+                f"--{boundary}\r\n"
+                f"Content-Type: {mime_type}\r\n\r\n"
+            ).encode() + file_content + f"\r\n--{boundary}--".encode()
+
+            url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+            response = requests.post(
+                url,
+                headers={
+                    **headers,
+                    "Content-Type": f"multipart/related; boundary={boundary}"
+                },
+                data=body,
+                timeout=120
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info(f"File created: {result.get('id')}")
+            return result
+
+    except Exception as e:
         logger.error(f"Error uploading file: {e}")
         raise
 
 def find_file_by_name(file_name, folder_id=None):
-    """
-    Find file ID by name
-    
-    Args:
-        file_name: Name of file to find
-        folder_id: Optional folder ID to search within
-    
-    Returns:
-        str or None: File ID if found, None otherwise
-    """
+    """Find file ID by name"""
     try:
         service = get_drive_service()
-        
         query = f"name='{file_name}' and trashed=false"
         if folder_id:
             query += f" and '{folder_id}' in parents"
-        
         results = service.files().list(
             q=query,
             fields="files(id, name)",
             pageSize=1
         ).execute()
-        
         files = results.get('files', [])
         if files:
-            logger.info(f"Found file '{file_name}': {files[0]['id']}")
             return files[0]['id']
-        else:
-            logger.warning(f"File '{file_name}' not found")
-            return None
-            
+        return None
     except HttpError as e:
         logger.error(f"Error finding file: {e}")
         raise
 
 def get_file_metadata(file_id):
-    """
-    Get metadata for a file
-    
-    Args:
-        file_id: Google Drive file ID
-    
-    Returns:
-        dict: File metadata
-    """
+    """Get metadata for a file"""
     try:
         service = get_drive_service()
-        
-        file_meta = service.files().get(
+        return service.files().get(
             fileId=file_id,
             fields="id, name, mimeType, size, modifiedTime, createdTime, parents"
         ).execute()
-        
-        return file_meta
-        
     except HttpError as e:
         logger.error(f"Error getting file metadata: {e}")
         raise
 
 def create_folder(folder_name, parent_folder_id=None):
-    """
-    Create a new folder in Google Drive
-    
-    Args:
-        folder_name: Name for the new folder
-        parent_folder_id: Optional parent folder ID
-    
-    Returns:
-        str: New folder ID
-    """
+    """Create a new folder in Google Drive"""
     try:
         service = get_drive_service()
-        
         file_metadata = {
             'name': folder_name,
             'mimeType': 'application/vnd.google-apps.folder'
         }
-        
         if parent_folder_id:
             file_metadata['parents'] = [parent_folder_id]
-        
         folder = service.files().create(
             body=file_metadata,
             fields='id, name'
         ).execute()
-        
         logger.info(f"Folder created: {folder['name']} ({folder['id']})")
         return folder['id']
-        
     except HttpError as e:
         logger.error(f"Error creating folder: {e}")
-        raise
-
-def download_file_as_bytes(file_id):
-    """
-    Download file from Google Drive and return raw bytes
-    """
-    try:
-        service = get_drive_service()
-        request = service.files().get_media(fileId=file_id)
-
-        file_stream = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_stream, request)
-
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-
-        file_stream.seek(0)
-        return file_stream.read()
-
-    except HttpError as e:
-        logger.error(f"Error downloading file {file_id}: {e}")
         raise
