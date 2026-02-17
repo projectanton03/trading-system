@@ -7,6 +7,7 @@ import os
 import io
 import logging
 from google.oauth2 import service_account
+from google.auth.transport.requests import AuthorizedSession
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from googleapiclient.errors import HttpError
@@ -18,31 +19,22 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 
 def get_drive_service():
     """
-    Create and return Google Drive service object with SSL cert handling
+    Create and return Google Drive service object
     
     Returns:
         Google Drive API service object
     """
     try:
-        # Import config here to avoid circular imports
         import config
-        import certifi
-        import httplib2
         
         credentials = service_account.Credentials.from_service_account_file(
             config.GOOGLE_SERVICE_ACCOUNT_FILE,
             scopes=SCOPES
         )
         
-        # Create HTTP client with proper SSL certificates
-        http = httplib2.Http(
-            ca_certs=certifi.where(),
-            disable_ssl_certificate_validation=False
-        )
-        
-        # Build service with custom HTTP client
-        service = build('drive', 'v3', credentials=credentials, http=http)
-        logger.info("Google Drive service created successfully with SSL certs")
+        # Build service using credentials only (no custom http)
+        service = build('drive', 'v3', credentials=credentials)
+        logger.info("Google Drive service created successfully")
         return service
         
     except Exception as e:
@@ -58,7 +50,6 @@ def test_drive_connection():
     """
     try:
         service = get_drive_service()
-        # Try to list files (limit 1)
         results = service.files().list(
             pageSize=1,
             fields="files(id, name)"
@@ -78,7 +69,7 @@ def list_files_in_folder(folder_id, file_type=None):
     
     Args:
         folder_id: Google Drive folder ID
-        file_type: Optional MIME type filter (e.g., 'application/vnd.google-apps.spreadsheet')
+        file_type: Optional MIME type filter
     
     Returns:
         list: List of file dictionaries with id, name, mimeType
@@ -86,7 +77,6 @@ def list_files_in_folder(folder_id, file_type=None):
     try:
         service = get_drive_service()
         
-        # Build query
         query = f"'{folder_id}' in parents and trashed=false"
         if file_type:
             query += f" and mimeType='{file_type}'"
@@ -122,7 +112,9 @@ def download_file(file_id, local_path):
         request = service.files().get_media(fileId=file_id)
         
         # Ensure directory exists
-        os.makedirs(os.path.dirname(local_path) if os.path.dirname(local_path) else '.', exist_ok=True)
+        dir_path = os.path.dirname(local_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         
         with open(local_path, 'wb') as f:
             downloader = MediaIoBaseDownload(f, request)
@@ -147,7 +139,7 @@ def upload_file(local_path, file_id=None, folder_id=None, file_name=None):
         local_path: Path to local file
         file_id: Optional - Google Drive file ID to update
         folder_id: Optional - Folder ID for new files
-        file_name: Optional - Name for file (defaults to basename)
+        file_name: Optional - Name for file
     
     Returns:
         dict: Uploaded file metadata
@@ -158,7 +150,6 @@ def upload_file(local_path, file_id=None, folder_id=None, file_name=None):
         if not file_name:
             file_name = os.path.basename(local_path)
         
-        # Determine MIME type based on extension
         mime_type = None
         if local_path.endswith('.xlsx') or local_path.endswith('.xlsm'):
             mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -170,7 +161,6 @@ def upload_file(local_path, file_id=None, folder_id=None, file_name=None):
         )
         
         if file_id:
-            # Update existing file
             updated_file = service.files().update(
                 fileId=file_id,
                 media_body=media,
@@ -179,7 +169,6 @@ def upload_file(local_path, file_id=None, folder_id=None, file_name=None):
             logger.info(f"File {file_id} updated successfully")
             return updated_file
         else:
-            # Create new file
             file_metadata = {'name': file_name}
             if folder_id:
                 file_metadata['parents'] = [folder_id]
@@ -198,7 +187,7 @@ def upload_file(local_path, file_id=None, folder_id=None, file_name=None):
 
 def find_file_by_name(file_name, folder_id=None):
     """
-    Find file ID by name (optionally in specific folder)
+    Find file ID by name
     
     Args:
         file_name: Name of file to find
