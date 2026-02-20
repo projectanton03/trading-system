@@ -272,6 +272,70 @@ def test_macro_fetch():
     
     return jsonify(macro_data)
 
+@app.route('/macro/fetch', methods=['GET'])
+def fetch_macro_data():
+    """
+    Fetch REAL macro data from FRED API
+    Week 2: This replaces the test endpoint with actual data
+    """
+    try:
+        from services.fred_api import FREDClient, calculate_yield_spread, calculate_credit_spread
+        
+        logger.info("Fetching real macro data from FRED API")
+        
+        # Initialize FRED client
+        client = FREDClient()
+        
+        # Fetch key indicators
+        treasury_10y, date_10y = client.get_latest_value('DGS10')
+        treasury_2y, date_2y = client.get_latest_value('DGS2')
+        consumer_sentiment, date_conf = client.get_latest_value('UMCSENT')
+        building_permits, date_permits = client.get_latest_value('PERMIT')
+        housing_starts, date_starts = client.get_latest_value('HOUST')
+        baa_corporate, date_baa = client.get_latest_value('DBAA')
+        industrial_production, date_indpro = client.get_latest_value('INDPRO')
+        
+        # Calculate spreads
+        yield_spread = calculate_yield_spread(treasury_10y, treasury_2y)
+        credit_spread = calculate_credit_spread(baa_corporate, treasury_10y)
+        
+        # Build response
+        macro_data = {
+            'treasury_10y': treasury_10y,
+            'treasury_2y': treasury_2y,
+            'yield_spread': yield_spread,
+            'credit_spread_bbb': credit_spread,
+            'consumer_sentiment': consumer_sentiment,
+            'building_permits': building_permits,
+            'housing_starts': housing_starts,
+            'baa_corporate': baa_corporate,
+            'industrial_production': industrial_production,
+            'timestamp': datetime.now().isoformat(),
+            'status': 'success',
+            'source': 'FRED API',
+            'note': 'Week 2 - Real data from Federal Reserve Economic Data',
+            'data_dates': {
+                'treasury_10y': date_10y,
+                'treasury_2y': date_2y,
+                'consumer_sentiment': date_conf,
+                'building_permits': date_permits,
+                'housing_starts': date_starts,
+                'baa_corporate': date_baa,
+                'industrial_production': date_indpro
+            }
+        }
+        
+        logger.info(f"Successfully fetched macro indicators from FRED")
+        return jsonify(macro_data)
+        
+    except Exception as e:
+        logger.error(f"Error fetching macro data: {e}")
+        return jsonify({
+            'error': str(e),
+            'status': 'failed',
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
 #═══════════════════════════════════════════════════════════════════════════════
 # STOCK SCREENING ENDPOINTS (Week 3-5 implementation)
 #═══════════════════════════════════════════════════════════════════════════════
@@ -391,6 +455,7 @@ def not_found(error):
             'POST /templates/test-update',
             'GET /macro/templates',
             'GET /macro/test-fetch',
+            'GET /macro/fetch',
             'POST /stocks/test-screen',
             'POST /test/telegram'
         ]
