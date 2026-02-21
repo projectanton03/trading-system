@@ -667,6 +667,134 @@ def audit_templates_v2():
             'status': 'failed'
         }), 500
 
+@app.route('/macro/backfill-yields', methods=['POST'])
+def backfill_yields_endpoint():
+    """
+    Backfill Benchmark Yields US with FRED data
+    Week 2: Fill 5-year gap (Jan 2021 → Feb 2026)
+    """
+    try:
+        import openpyxl
+        import tempfile
+        from services.fred_api import FREDClient
+        
+        logger.info("Starting Benchmark Yields backfill...")
+        
+        file_id = '1I3f36ghjh-NpI_EyhlZ9JTNUnGIWDkg4'
+        start_date = '2021-01-04'
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        
+        # Mapping of sheet names to FRED series IDs
+        yield_series = {
+            '3mo': 'DGS3MO',
+            '6mo': 'DGS6MO',
+            '1yr': 'DGS1',
+            '2yr': 'DGS2',
+            '3yr': 'DGS3',
+            '5yr': 'DGS5',
+            '7yr': 'DGS7',
+            '10yr': 'DGS10',
+            '20yr': 'DGS20',
+            '30yr': 'DGS30',
+        }
+        
+        # Initialize FRED client
+        client = FREDClient()
+        
+        # Download file
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        google_drive.download_file(file_id, tmp_path)
+        
+        # Load workbook
+        wb = openpyxl.load_workbook(tmp_path)
+        
+        results = []
+        total_rows_added = 0
+        
+        # Process each yield series
+        for sheet_name, series_id in yield_series.items():
+            try:
+                if sheet_name not in wb.sheetnames:
+                    logger.warning(f"Sheet {sheet_name} not found")
+                    continue
+                
+                # Fetch data from FRED
+                data = client.get_series(series_id, limit=2000, sort_order='asc')
+                
+                if not data or 'observations' not in data:
+                    continue
+                
+                # Convert to DataFrame
+                df = pd.DataFrame(data['observations'])
+                df['date'] = pd.to_datetime(df['date'])
+                df['value'] = pd.to_numeric(df['value'], errors='coerce')
+                
+                # Filter to backfill range
+                df = df[df['date'] >= start_date]
+                df = df[df['date'] <= end_date]
+                df = df.dropna(subset=['value'])
+                
+                if len(df) == 0:
+                    continue
+                
+                # Read existing sheet
+                ws = wb[sheet_name]
+                
+                # Find last row with data
+                last_row = ws.max_row
+                
+                # Append new data
+                rows_added = 0
+                for _, row in df.iterrows():
+                    last_row += 1
+                    ws.cell(row=last_row, column=1, value=row['date'])
+                    ws.cell(row=last_row, column=2, value=row['value'])
+                    rows_added += 1
+                
+                total_rows_added += rows_added
+                
+                results.append({
+                    'sheet': sheet_name,
+                    'series_id': series_id,
+                    'rows_added': rows_added,
+                    'date_range': f"{df['date'].min().strftime('%Y-%m-%d')} to {df['date'].max().strftime('%Y-%m-%d')}"
+                })
+                
+                logger.info(f"Added {rows_added} rows to {sheet_name}")
+                
+            except Exception as e:
+                logger.error(f"Error processing {sheet_name}: {e}")
+        
+        # Save workbook
+        wb.save(tmp_path)
+        wb.close()
+        
+        # Upload back to Drive
+        google_drive.upload_file(tmp_path, file_id=file_id)
+        
+        # Clean up
+        os.remove(tmp_path)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Backfilled {total_rows_added} rows across {len(results)} sheets',
+            'file_id': file_id,
+            'start_date': start_date,
+            'end_date': end_date,
+            'sheets_updated': results,
+            'total_rows_added': total_rows_added,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in yields backfill: {e}")
+        return jsonify({
+            'error': str(e),
+            'status': 'failed'
+        }), 500
+
 #═══════════════════════════════════════════════════════════════════════════════
 # STOCK SCREENING ENDPOINTS (Week 3-5 implementation)
 #═══════════════════════════════════════════════════════════════════════════════
@@ -789,6 +917,7 @@ def not_found(error):
             'GET /macro/fetch',
             'GET /macro/audit-templates',
             'GET /macro/audit-templates-v2',
+            'POST /macro/backfill-yields',
             'POST /stocks/test-screen',
             'POST /test/telegram'
         ]
