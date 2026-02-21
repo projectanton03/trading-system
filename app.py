@@ -473,6 +473,200 @@ def audit_templates():
             'status': 'failed'
         }), 500
 
+@app.route('/macro/audit-templates-v2', methods=['GET'])
+def audit_templates_v2():
+    """
+    Enhanced template audit - checks multiple sheets and better date detection
+    """
+    try:
+        import openpyxl
+        import tempfile
+        
+        logger.info("Starting enhanced template audit...")
+        
+        templates_to_audit = {
+            'ISM_Manufacturing': '1o8eHxS_8V-tOgW_4lrOMCZ9FGCclGyrO',
+            'US_Sector_Data': '11UwhrI8uUdr7ngWy_87rizWBEejLCdqo',
+            'Benchmark_Yields_US': '1I3f36ghjh-NpI_EyhlZ9JTNUnGIWDkg4',
+        }
+        
+        results = []
+        
+        for template_name, file_id in templates_to_audit.items():
+            try:
+                # Download file to temp location
+                with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+                    tmp_path = tmp.name
+                
+                google_drive.download_file(file_id, tmp_path)
+                
+                # Load workbook to see all sheets
+                wb = openpyxl.load_workbook(tmp_path, read_only=True, data_only=True)
+                sheet_names = wb.sheetnames
+                
+                logger.info(f"{template_name} has sheets: {sheet_names}")
+                
+                # Try to find a sheet with data (not 'NOTES' or 'README')
+                data_sheets = [s for s in sheet_names if s.upper() not in ['NOTES', 'README', 'INFO', 'INSTRUCTIONS']]
+                
+                if not data_sheets:
+                    data_sheets = sheet_names
+                
+                # Try each sheet until we find dates
+                best_result = None
+                
+                for sheet_name in data_sheets[:3]:  # Try first 3 data sheets
+                    try:
+                        df = pd.read_excel(tmp_path, sheet_name=sheet_name)
+                        
+                        # Skip if too few rows
+                        if len(df) < 5:
+                            continue
+                        
+                        # Try to find date column more intelligently
+                        date_col = None
+                        
+                        # Method 1: Look for columns with 'date' in name
+                        for col in df.columns:
+                            col_str = str(col).lower()
+                            if any(word in col_str for word in ['date', 'period', 'month', 'year', 'time', 'day']):
+                                # Try to parse this column
+                                test_series = pd.to_datetime(df[col], errors='coerce')
+                                valid_dates = test_series.notna().sum()
+                                if valid_dates > len(df) * 0.5:  # At least 50% valid dates
+                                    date_col = col
+                                    break
+                        
+                        # Method 2: Try first few columns
+                        if not date_col:
+                            for col in df.columns[:3]:
+                                test_series = pd.to_datetime(df[col], errors='coerce')
+                                valid_dates = test_series.notna().sum()
+                                if valid_dates > len(df) * 0.5:
+                                    date_col = col
+                                    break
+                        
+                        if not date_col:
+                            continue
+                        
+                        # Parse dates
+                        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+                        df_valid = df[df[date_col].notna()]
+                        
+                        if len(df_valid) < 5:
+                            continue
+                        
+                        # Get date range
+                        start_date = df_valid[date_col].min()
+                        end_date = df_valid[date_col].max()
+                        
+                        # Skip if dates are clearly wrong (before 1900 or after 2030)
+                        if start_date.year < 1900 or end_date.year > 2030:
+                            continue
+                        
+                        total_rows = len(df_valid)
+                        current_date = datetime.now()
+                        gap_days = (current_date - end_date).days
+                        
+                        # Calculate frequency
+                        date_diffs = df_valid[date_col].diff().dropna()
+                        if len(date_diffs) > 0:
+                            avg_diff_days = date_diffs.dt.days.median()
+                            
+                            if avg_diff_days <= 1.5:
+                                frequency = 'daily'
+                                gap_periods = gap_days
+                            elif avg_diff_days <= 35:
+                                frequency = 'monthly'
+                                gap_periods = gap_days // 30
+                            elif avg_diff_days <= 100:
+                                frequency = 'quarterly'
+                                gap_periods = gap_days // 90
+                            else:
+                                frequency = 'annual'
+                                gap_periods = gap_days // 365
+                        else:
+                            frequency = 'unknown'
+                            gap_periods = 0
+                        
+                        result = {
+                            'template_name': template_name,
+                            'file_id': file_id,
+                            'status': 'SUCCESS',
+                            'sheet_name': sheet_name,
+                            'start_date': start_date.strftime('%Y-%m-%d'),
+                            'end_date': end_date.strftime('%Y-%m-%d'),
+                            'last_update_days_ago': gap_days,
+                            'total_rows': int(total_rows),
+                            'frequency': frequency,
+                            'gap_periods': int(gap_periods),
+                            'date_column': str(date_col),
+                            'needs_backfill': gap_days > 7,
+                            'all_sheets': sheet_names
+                        }
+                        
+                        # Keep best result (most rows, most recent end date)
+                        if best_result is None or total_rows > best_result['total_rows']:
+                            best_result = result
+                        
+                    except Exception as e:
+                        logger.warning(f"Could not parse sheet {sheet_name}: {e}")
+                        continue
+                
+                wb.close()
+                os.remove(tmp_path)
+                
+                if best_result:
+                    results.append(best_result)
+                    logger.info(f"Audited {template_name}: {best_result['total_rows']} rows, ends {best_result['end_date']}")
+                else:
+                    results.append({
+                        'template_name': template_name,
+                        'status': 'ERROR',
+                        'error': 'No valid date columns found in any sheet',
+                        'sheets_checked': sheet_names
+                    })
+                
+            except Exception as e:
+                logger.error(f"Error auditing {template_name}: {e}")
+                results.append({
+                    'template_name': template_name,
+                    'status': 'ERROR',
+                    'error': str(e)
+                })
+        
+        # Generate summary
+        total = len(results)
+        success = sum(1 for r in results if r['status'] == 'SUCCESS')
+        needs_backfill = sum(1 for r in results if r.get('needs_backfill', False))
+        
+        if success > 0:
+            total_gap_days = sum(r.get('last_update_days_ago', 0) for r in results if r['status'] == 'SUCCESS')
+            avg_gap_days = total_gap_days // success
+        else:
+            avg_gap_days = 0
+        
+        return jsonify({
+            'status': 'success',
+            'timestamp': datetime.now().isoformat(),
+            'summary': {
+                'total_templates_checked': total,
+                'successfully_audited': success,
+                'needs_backfill': needs_backfill,
+                'average_gap_days': avg_gap_days,
+                'oldest_end_date': min([r['end_date'] for r in results if r['status'] == 'SUCCESS']) if success > 0 else None,
+                'newest_end_date': max([r['end_date'] for r in results if r['status'] == 'SUCCESS']) if success > 0 else None
+            },
+            'templates': results
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in template audit: {e}")
+        return jsonify({
+            'error': str(e),
+            'status': 'failed'
+        }), 500
+
 #═══════════════════════════════════════════════════════════════════════════════
 # STOCK SCREENING ENDPOINTS (Week 3-5 implementation)
 #═══════════════════════════════════════════════════════════════════════════════
@@ -594,6 +788,7 @@ def not_found(error):
             'GET /macro/test-fetch',
             'GET /macro/fetch',
             'GET /macro/audit-templates',
+            'GET /macro/audit-templates-v2',
             'POST /stocks/test-screen',
             'POST /test/telegram'
         ]
