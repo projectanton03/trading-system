@@ -795,6 +795,120 @@ def backfill_yields_endpoint():
             'status': 'failed'
         }), 500
 
+@app.route('/macro/inspect-yields', methods=['GET'])
+def inspect_yields():
+    """
+    Inspect the Benchmark Yields file structure to understand layout
+    """
+    try:
+        import openpyxl
+        import tempfile
+        
+        logger.info("Inspecting Benchmark Yields file structure...")
+        
+        file_id = '1I3f36ghjh-NpI_EyhlZ9JTNUnGIWDkg4'
+        
+        # Download file
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        google_drive.download_file(file_id, tmp_path)
+        
+        # Load workbook
+        wb = openpyxl.load_workbook(tmp_path, data_only=True)
+        
+        inspection = {
+            'file_id': file_id,
+            'total_sheets': len(wb.sheetnames),
+            'all_sheets': wb.sheetnames,
+            'sheet_details': []
+        }
+        
+        # Inspect first few sheets
+        sheets_to_check = ['10yr', '2yr', '5yr', '3mo']
+        
+        for sheet_name in sheets_to_check:
+            if sheet_name not in wb.sheetnames:
+                inspection['sheet_details'].append({
+                    'sheet': sheet_name,
+                    'status': 'NOT_FOUND'
+                })
+                continue
+            
+            ws = wb[sheet_name]
+            
+            # Get sheet dimensions
+            max_row = ws.max_row
+            max_col = ws.max_column
+            
+            # Sample first 10 rows
+            sample_rows = []
+            for row_num in range(1, min(11, max_row + 1)):
+                row_data = []
+                for col_num in range(1, min(6, max_col + 1)):
+                    cell = ws.cell(row=row_num, column=col_num)
+                    row_data.append({
+                        'value': str(cell.value)[:50] if cell.value else None,
+                        'type': str(type(cell.value).__name__),
+                        'has_formula': cell.data_type == 'f'
+                    })
+                sample_rows.append({
+                    'row': row_num,
+                    'cells': row_data
+                })
+            
+            # Sample last 10 rows
+            sample_last_rows = []
+            for row_num in range(max(1, max_row - 9), max_row + 1):
+                row_data = []
+                for col_num in range(1, min(3, max_col + 1)):
+                    cell = ws.cell(row=row_num, column=col_num)
+                    row_data.append({
+                        'value': str(cell.value)[:50] if cell.value else None,
+                        'type': str(type(cell.value).__name__)
+                    })
+                sample_last_rows.append({
+                    'row': row_num,
+                    'cells': row_data
+                })
+            
+            # Find where actual data starts (look for dates)
+            data_start_row = None
+            for row_num in range(1, min(50, max_row + 1)):
+                cell_value = ws.cell(row=row_num, column=1).value
+                if cell_value and isinstance(cell_value, datetime):
+                    data_start_row = row_num
+                    break
+                # Try parsing as date string
+                try:
+                    if cell_value and pd.to_datetime(cell_value, errors='coerce') is not pd.NaT:
+                        data_start_row = row_num
+                        break
+                except:
+                    pass
+            
+            inspection['sheet_details'].append({
+                'sheet': sheet_name,
+                'status': 'FOUND',
+                'max_row': max_row,
+                'max_column': max_col,
+                'data_start_row': data_start_row,
+                'first_10_rows': sample_rows,
+                'last_10_rows': sample_last_rows
+            })
+        
+        wb.close()
+        os.remove(tmp_path)
+        
+        return jsonify(inspection)
+        
+    except Exception as e:
+        logger.error(f"Error inspecting file: {e}")
+        return jsonify({
+            'error': str(e),
+            'status': 'failed'
+        }), 500
+
 #═══════════════════════════════════════════════════════════════════════════════
 # STOCK SCREENING ENDPOINTS (Week 3-5 implementation)
 #═══════════════════════════════════════════════════════════════════════════════
@@ -918,6 +1032,7 @@ def not_found(error):
             'GET /macro/audit-templates',
             'GET /macro/audit-templates-v2',
             'POST /macro/backfill-yields',
+            'GET /macro/inspect-yields',
             'POST /stocks/test-screen',
             'POST /test/telegram'
         ]
