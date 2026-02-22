@@ -909,6 +909,114 @@ def inspect_yields():
             'status': 'failed'
         }), 500
 
+@app.route('/macro/analyze-data-sheet', methods=['GET'])
+def analyze_data_sheet():
+    """
+    Deep analysis of the Data sheet to understand structure for backfilling
+    """
+    try:
+        import openpyxl
+        import tempfile
+        
+        file_id = '1I3f36ghjh-NpI_EyhlZ9JTNUnGIWDkg4'
+        
+        # Download file
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        google_drive.download_file(file_id, tmp_path)
+        
+        # Load workbook
+        wb = openpyxl.load_workbook(tmp_path, data_only=False)
+        
+        # Read Data sheet
+        if 'Data' not in wb.sheetnames:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'Data sheet not found', 'available_sheets': wb.sheetnames}), 404
+        
+        ws = wb['Data']
+        
+        analysis = {
+            'sheet_name': 'Data',
+            'max_row': ws.max_row,
+            'max_column': ws.max_column,
+            'structure': {}
+        }
+        
+        # Read first 20 rows to understand structure
+        first_rows = []
+        for row_num in range(1, min(21, ws.max_row + 1)):
+            row_data = {}
+            for col_num in range(1, min(30, ws.max_column + 1)):
+                cell = ws.cell(row=row_num, column=col_num)
+                col_letter = openpyxl.utils.get_column_letter(col_num)
+                
+                cell_info = {
+                    'value': str(cell.value)[:100] if cell.value else None,
+                    'type': str(type(cell.value).__name__)
+                }
+                
+                if hasattr(cell, 'data_type') and cell.data_type == 'f':
+                    cell_info['has_formula'] = True
+                
+                row_data[col_letter] = cell_info
+            
+            first_rows.append({
+                'row': row_num,
+                'data': row_data
+            })
+        
+        analysis['first_20_rows'] = first_rows
+        
+        # Find where date column is
+        date_col = None
+        for col_num in range(1, ws.max_column + 1):
+            cell_value = ws.cell(row=10, column=col_num).value
+            if cell_value and isinstance(cell_value, datetime):
+                date_col = openpyxl.utils.get_column_letter(col_num)
+                break
+        
+        if date_col:
+            date_samples = []
+            sample_rows = [10, 50, 100, 200, ws.max_row - 10, ws.max_row]
+            for row_num in sample_rows:
+                if row_num > 0 and row_num <= ws.max_row:
+                    date_val = ws.cell(row=row_num, column=openpyxl.utils.column_index_from_string(date_col)).value
+                    date_samples.append({
+                        'row': row_num,
+                        'date': str(date_val) if date_val else None
+                    })
+            
+            analysis['date_column'] = {
+                'column': date_col,
+                'samples': date_samples
+            }
+        
+        # Check for yield columns in row 2
+        header_row = 2
+        yield_columns = {}
+        for col_num in range(1, ws.max_column + 1):
+            header = ws.cell(row=header_row, column=col_num).value
+            if header and any(term in str(header).lower() for term in ['yr', 'mo', 'fed', 'tips', 'date']):
+                col_letter = openpyxl.utils.get_column_letter(col_num)
+                yield_columns[col_letter] = str(header)
+        
+        analysis['yield_columns'] = yield_columns
+        
+        wb.close()
+        os.remove(tmp_path)
+        
+        return jsonify(analysis)
+        
+    except Exception as e:
+        logger.error(f"Error analyzing Data sheet: {e}")
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
 #═══════════════════════════════════════════════════════════════════════════════
 # STOCK SCREENING ENDPOINTS (Week 3-5 implementation)
 #═══════════════════════════════════════════════════════════════════════════════
@@ -1033,6 +1141,7 @@ def not_found(error):
             'GET /macro/audit-templates-v2',
             'POST /macro/backfill-yields',
             'GET /macro/inspect-yields',
+            'GET /macro/analyze-data-sheet',
             'POST /stocks/test-screen',
             'POST /test/telegram'
         ]
