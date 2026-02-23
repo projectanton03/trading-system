@@ -982,7 +982,8 @@ def backfill_yields_v2():
         all_series_data = {}
         for series_id in series_to_columns.keys():
             try:
-                data = client.get_series(series_id, limit=2000, sort_order='asc')
+                # CRITICAL: Use DESC to get most recent data!
+                data = client.get_series(series_id, limit=2000, sort_order='desc')
                 
                 if data and 'observations' in data:
                     df = pd.DataFrame(data['observations'])
