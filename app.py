@@ -1102,6 +1102,144 @@ def backfill_yields_v2():
             'status': 'failed'
         }), 500
 
+@app.route('/macro/backfill-yields-correct', methods=['POST'])
+def backfill_yields_correct():
+    """
+    CORRECT backfill - OVERWRITES rows (no inserting = no blank rows!)
+    Includes TIPS data
+    Preserves formulas
+    """
+    try:
+        import openpyxl
+        import tempfile
+        from services.fred_api import FREDClient
+        
+        logger.info("Starting CORRECT Benchmark Yields backfill...")
+        
+        file_id = '1I3f36ghjh-NpI_EyhlZ9JTNUnGIWDkg4'
+        
+        # ALL series including TIPS
+        series_to_columns = {
+            'DFF': 2,         # B - Fed Funds
+            # Column C (1mo) - DGS1MO not available
+            'DGS3MO': 4,      # D - 3mo
+            'DGS6MO': 5,      # E - 6mo
+            'DGS1': 6,        # F - 1yr
+            'DGS2': 7,        # G - 2yr
+            'DGS3': 8,        # H - 3yr
+            'DGS5': 9,        # I - 5yr
+            'DGS7': 10,       # J - 7yr
+            'DGS10': 11,      # K - 10yr
+            'DGS20': 12,      # L - 20yr
+            'DGS30': 13,      # M - 30yr
+            'DFII5': 14,      # N - 5yr TIPS
+            'DFII7': 15,      # O - 7yr TIPS
+            'DFII10': 16,     # P - 10yr TIPS
+            'DFII20': 17,     # Q - 20yr TIPS
+            'DFII30': 18,     # R - 30yr TIPS
+        }
+        
+        client = FREDClient()
+        
+        # Download file
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        logger.info(f"Downloading file {file_id}...")
+        google_drive.download_file(file_id, tmp_path)
+        
+        # Load workbook
+        wb = openpyxl.load_workbook(tmp_path)
+        
+        if 'Data' not in wb.sheetnames:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'Data sheet not found'}), 404
+        
+        ws = wb['Data']
+        
+        # Fetch ALL recent data (last 2000 = ~8 years)
+        logger.info("Fetching data from FRED...")
+        
+        all_series_data = {}
+        for series_id in series_to_columns.keys():
+            try:
+                data = client.get_series(series_id, limit=2000, sort_order='desc')
+                
+                if data and 'observations' in data:
+                    df = pd.DataFrame(data['observations'])
+                    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
+                    df['value'] = pd.to_numeric(df['value'], errors='coerce')
+                    df = df.dropna(subset=['date', 'value'])
+                    
+                    all_series_data[series_id] = df
+                    logger.info(f"{series_id}: {len(df)} obs from {df['date'].min().date()} to {df['date'].max().date()}")
+                    
+            except Exception as e:
+                logger.error(f"Error fetching {series_id}: {e}")
+        
+        # Get all unique dates
+        all_dates = set()
+        for df in all_series_data.values():
+            all_dates.update(df['date'].tolist())
+        
+        # Sort DESCENDING (newest first)
+        sorted_dates = sorted(list(all_dates), reverse=True)
+        
+        logger.info(f"Total dates: {len(sorted_dates)} from {sorted_dates[-1].date()} to {sorted_dates[0].date()}")
+        
+        # OVERWRITE starting at row 4 (NO INSERTING!)
+        logger.info("Writing data (OVERWRITE mode - no blank rows)...")
+        
+        for i, date in enumerate(sorted_dates):
+            row_num = 4 + i
+            
+            ws.cell(row=row_num, column=1, value=date)
+            
+            for series_id, col_num in series_to_columns.items():
+                if series_id in all_series_data:
+                    series_df = all_series_data[series_id]
+                    matches = series_df[series_df['date'] == date]
+                    if len(matches) > 0:
+                        ws.cell(row=row_num, column=col_num, value=float(matches.iloc[0]['value']))
+            
+            if (i + 1) % 200 == 0:
+                logger.info(f"Progress: {i+1}/{len(sorted_dates)}")
+        
+        logger.info(f"Wrote {len(sorted_dates)} rows")
+        
+        # Save workbook
+        logger.info("Saving workbook...")
+        wb.save(tmp_path)
+        wb.close()
+        
+        # Upload back to Drive
+        logger.info("Uploading to Google Drive...")
+        google_drive.upload_file(tmp_path, file_id=file_id)
+        
+        # Clean up
+        os.remove(tmp_path)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Overwrote {len(sorted_dates)} rows with continuous data',
+            'rows_written': len(sorted_dates),
+            'date_range': f"{sorted_dates[-1].strftime('%Y-%m-%d')} to {sorted_dates[0].strftime('%Y-%m-%d')}",
+            'series_count': len(series_to_columns),
+            'includes_tips': True,
+            'method': 'OVERWRITE (no inserting, no blank rows)',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in correct backfill: {e}")
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc(),
+            'status': 'failed'
+        }), 500
+
 @app.route('/macro/analyze-data-sheet', methods=['GET'])
 def analyze_data_sheet():
     """
@@ -1334,6 +1472,8 @@ def not_found(error):
             'GET /macro/audit-templates-v2',
             'POST /macro/backfill-yields',
             'POST /macro/backfill-yields-v2',
+            'POST /macro/backfill-yields-v3',
+            'POST /macro/backfill-yields-correct',
             'GET /macro/inspect-yields',
             'GET /macro/analyze-data-sheet',
             'POST /stocks/test-screen',
