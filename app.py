@@ -989,13 +989,24 @@ def backfill_yields_v2():
                     df['date'] = pd.to_datetime(df['date'])
                     df['value'] = pd.to_numeric(df['value'], errors='coerce')
                     
+                    total_before_filter = len(df)
+                    
                     # Filter to our date range - using datetime objects
                     df = df[df['date'] >= start_date_dt]
+                    after_start_filter = len(df)
+                    
                     df = df[df['date'] <= end_date_dt]
+                    after_end_filter = len(df)
+                    
                     df = df.dropna(subset=['value'])
+                    after_dropna = len(df)
                     
                     all_series_data[series_id] = df
+                    logger.info(f"{series_id}: total={total_before_filter}, after_start={after_start_filter}, after_end={after_end_filter}, after_dropna={after_dropna}")
                     logger.info(f"Fetched {len(df)} observations for {series_id}")
+                    
+                    if len(df) > 0:
+                        logger.info(f"  Date range in data: {df['date'].min()} to {df['date'].max()}")
                 else:
                     logger.warning(f"No data for {series_id}")
                     
