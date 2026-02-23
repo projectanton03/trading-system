@@ -986,10 +986,17 @@ def backfill_yields_v2():
                 
                 if data and 'observations' in data:
                     df = pd.DataFrame(data['observations'])
-                    df['date'] = pd.to_datetime(df['date'])
+                    
+                    # Convert to datetime and normalize (remove timezone info)
+                    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
                     df['value'] = pd.to_numeric(df['value'], errors='coerce')
                     
                     total_before_filter = len(df)
+                    
+                    # Log first and last dates in raw data
+                    if len(df) > 0:
+                        logger.info(f"{series_id} raw data range: {df['date'].min()} to {df['date'].max()}")
+                        logger.info(f"  Looking for dates >= {start_date_dt} and <= {end_date_dt}")
                     
                     # Filter to our date range - using datetime objects
                     df = df[df['date'] >= start_date_dt]
