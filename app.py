@@ -909,6 +909,180 @@ def inspect_yields():
             'status': 'failed'
         }), 500
 
+@app.route('/macro/backfill-yields-v2', methods=['POST'])
+def backfill_yields_v2():
+    """
+    Smart backfill for Benchmark Yields Data sheet
+    Handles descending date order and inserts at top
+    """
+    try:
+        import openpyxl
+        import tempfile
+        from services.fred_api import FREDClient
+        from datetime import timedelta
+        
+        logger.info("Starting Benchmark Yields backfill v2...")
+        
+        file_id = '1I3f36ghjh-NpI_EyhlZ9JTNUnGIWDkg4'
+        
+        # FRED series mapping to columns
+        series_to_columns = {
+            'DFF': 2,      # B - Fed Funds
+            'DGS3MO': 4,   # D - 3mo
+            'DGS6MO': 5,   # E - 6mo
+            'DGS1': 6,     # F - 1yr
+            'DGS2': 7,     # G - 2yr
+            'DGS3': 8,     # H - 3yr
+            'DGS5': 9,     # I - 5yr
+            'DGS7': 10,    # J - 7yr
+            'DGS10': 11,   # K - 10yr
+            'DGS20': 12,   # L - 20yr
+            'DGS30': 13,   # M - 30yr
+        }
+        
+        # Initialize FRED client
+        client = FREDClient()
+        
+        # Download file
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        logger.info(f"Downloading file {file_id}...")
+        google_drive.download_file(file_id, tmp_path)
+        
+        # Load workbook
+        wb = openpyxl.load_workbook(tmp_path)
+        
+        if 'Data' not in wb.sheetnames:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'Data sheet not found'}), 404
+        
+        ws = wb['Data']
+        
+        # Check current last date (should be in A4)
+        current_last_date = ws.cell(row=4, column=1).value
+        logger.info(f"Current last date in file: {current_last_date}")
+        
+        if not current_last_date:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'No date found in A4'}), 400
+        
+        # Fetch data from FRED for all series
+        logger.info("Fetching data from FRED...")
+        
+        # We need data from day after current_last_date to today
+        start_date = (current_last_date + timedelta(days=1)).strftime('%Y-%m-%d')
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        
+        logger.info(f"Fetching data from {start_date} to {end_date}")
+        
+        # Fetch each series
+        all_series_data = {}
+        for series_id in series_to_columns.keys():
+            try:
+                data = client.get_series(series_id, limit=2000, sort_order='asc')
+                
+                if data and 'observations' in data:
+                    df = pd.DataFrame(data['observations'])
+                    df['date'] = pd.to_datetime(df['date'])
+                    df['value'] = pd.to_numeric(df['value'], errors='coerce')
+                    
+                    # Filter to our date range
+                    df = df[df['date'] >= start_date]
+                    df = df[df['date'] <= end_date]
+                    df = df.dropna(subset=['value'])
+                    
+                    all_series_data[series_id] = df
+                    logger.info(f"Fetched {len(df)} observations for {series_id}")
+                else:
+                    logger.warning(f"No data for {series_id}")
+                    
+            except Exception as e:
+                logger.error(f"Error fetching {series_id}: {e}")
+        
+        # Get union of all dates (business days where we have data)
+        all_dates = set()
+        for df in all_series_data.values():
+            all_dates.update(df['date'].tolist())
+        
+        # Sort dates in DESCENDING order (newest first)
+        sorted_dates = sorted(list(all_dates), reverse=True)
+        
+        logger.info(f"Total unique dates to add: {len(sorted_dates)}")
+        
+        if len(sorted_dates) == 0:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({
+                'status': 'success',
+                'message': 'No new data to add - file is up to date',
+                'rows_added': 0
+            })
+        
+        # Insert rows at row 4 (pushing existing data down)
+        logger.info(f"Inserting {len(sorted_dates)} rows at row 4...")
+        ws.insert_rows(4, len(sorted_dates))
+        
+        # Fill in the data
+        rows_added = 0
+        for i, date in enumerate(sorted_dates):
+            row_num = 4 + i
+            
+            # Set date in column A
+            ws.cell(row=row_num, column=1, value=date)
+            
+            # Set values for each series
+            for series_id, col_num in series_to_columns.items():
+                if series_id in all_series_data:
+                    series_df = all_series_data[series_id]
+                    # Find value for this date
+                    value_rows = series_df[series_df['date'] == date]
+                    if len(value_rows) > 0:
+                        value = value_rows.iloc[0]['value']
+                        ws.cell(row=row_num, column=col_num, value=value)
+            
+            rows_added += 1
+            
+            if rows_added % 100 == 0:
+                logger.info(f"Progress: {rows_added}/{len(sorted_dates)} rows")
+        
+        logger.info(f"Filled {rows_added} rows with data")
+        
+        # Save workbook
+        logger.info("Saving workbook...")
+        wb.save(tmp_path)
+        wb.close()
+        
+        # Upload back to Drive
+        logger.info("Uploading to Google Drive...")
+        google_drive.upload_file(tmp_path, file_id=file_id)
+        
+        # Clean up
+        os.remove(tmp_path)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Successfully backfilled {rows_added} business days',
+            'file_id': file_id,
+            'date_range': f"{sorted_dates[-1].strftime('%Y-%m-%d')} to {sorted_dates[0].strftime('%Y-%m-%d')}",
+            'rows_added': rows_added,
+            'series_updated': list(series_to_columns.keys()),
+            'start_date': start_date,
+            'end_date': end_date,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in yields backfill v2: {e}")
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc(),
+            'status': 'failed'
+        }), 500
+
 @app.route('/macro/analyze-data-sheet', methods=['GET'])
 def analyze_data_sheet():
     """
@@ -1140,6 +1314,7 @@ def not_found(error):
             'GET /macro/audit-templates',
             'GET /macro/audit-templates-v2',
             'POST /macro/backfill-yields',
+            'POST /macro/backfill-yields-v2',
             'GET /macro/inspect-yields',
             'GET /macro/analyze-data-sheet',
             'POST /stocks/test-screen',
