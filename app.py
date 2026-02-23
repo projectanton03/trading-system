@@ -973,10 +973,10 @@ def backfill_yields_v2():
         logger.info("Fetching data from FRED...")
         
         # We need data from day after current_last_date to today
-        start_date = (current_last_date + timedelta(days=1)).strftime('%Y-%m-%d')
-        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date_dt = current_last_date + timedelta(days=1)
+        end_date_dt = datetime.now()
         
-        logger.info(f"Fetching data from {start_date} to {end_date}")
+        logger.info(f"Fetching data from {start_date_dt.strftime('%Y-%m-%d')} to {end_date_dt.strftime('%Y-%m-%d')}")
         
         # Fetch each series
         all_series_data = {}
@@ -989,9 +989,9 @@ def backfill_yields_v2():
                     df['date'] = pd.to_datetime(df['date'])
                     df['value'] = pd.to_numeric(df['value'], errors='coerce')
                     
-                    # Filter to our date range
-                    df = df[df['date'] >= start_date]
-                    df = df[df['date'] <= end_date]
+                    # Filter to our date range - using datetime objects
+                    df = df[df['date'] >= start_date_dt]
+                    df = df[df['date'] <= end_date_dt]
                     df = df.dropna(subset=['value'])
                     
                     all_series_data[series_id] = df
@@ -1069,8 +1069,8 @@ def backfill_yields_v2():
             'date_range': f"{sorted_dates[-1].strftime('%Y-%m-%d')} to {sorted_dates[0].strftime('%Y-%m-%d')}",
             'rows_added': rows_added,
             'series_updated': list(series_to_columns.keys()),
-            'start_date': start_date,
-            'end_date': end_date,
+            'start_date': start_date_dt.strftime('%Y-%m-%d'),
+            'end_date': end_date_dt.strftime('%Y-%m-%d'),
             'timestamp': datetime.now().isoformat()
         })
         
