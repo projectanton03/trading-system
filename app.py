@@ -1118,10 +1118,10 @@ def backfill_yields_correct():
         
         file_id = '1I3f36ghjh-NpI_EyhlZ9JTNUnGIWDkg4'
         
-        # ALL series including TIPS
+        # ALL series including TIPS AND 1-MONTH!
         series_to_columns = {
             'DFF': 2,         # B - Fed Funds
-            # Column C (1mo) - DGS1MO not available
+            'DGS1MO': 3,      # C - 1mo ← ADDED!
             'DGS3MO': 4,      # D - 3mo
             'DGS6MO': 5,      # E - 6mo
             'DGS1': 6,        # F - 1yr
