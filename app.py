@@ -1240,6 +1240,279 @@ def backfill_yields_correct():
             'status': 'failed'
         }), 500
 
+@app.route('/macro/backfill-yields-final', methods=['POST'])
+def backfill_yields_final():
+    """
+    FINAL VERSION:
+    - Only writes dates with complete main Treasury data (2yr, 5yr, 10yr, 30yr)
+    - Creates professional charts from scratch
+    - No blank rows in main series
+    """
+    try:
+        import openpyxl
+        from openpyxl.chart import LineChart, Reference
+        from openpyxl.chart.marker import Marker
+        import tempfile
+        from services.fred_api import FREDClient
+        
+        logger.info("Starting FINAL Benchmark Yields backfill with chart creation...")
+        
+        file_id = '1I3f36ghjh-NpI_EyhlZ9JTNUnGIWDkg4'
+        
+        # Define MAIN series (must have complete data for a date to be included)
+        main_series = ['DGS2', 'DGS5', 'DGS10', 'DGS30']
+        
+        # All series with column mappings
+        all_series = {
+            'DFF': 2,         # B - Fed Funds
+            'DGS1MO': 3,      # C - 1mo (supplementary)
+            'DGS3MO': 4,      # D - 3mo
+            'DGS6MO': 5,      # E - 6mo
+            'DGS1': 6,        # F - 1yr
+            'DGS2': 7,        # G - 2yr (MAIN)
+            'DGS3': 8,        # H - 3yr
+            'DGS5': 9,        # I - 5yr (MAIN)
+            'DGS7': 10,       # J - 7yr
+            'DGS10': 11,      # K - 10yr (MAIN)
+            'DGS20': 12,      # L - 20yr
+            'DGS30': 13,      # M - 30yr (MAIN)
+            'DFII5': 14,      # N - 5yr TIPS (supplementary)
+            'DFII7': 15,      # O - 7yr TIPS (supplementary)
+            'DFII10': 16,     # P - 10yr TIPS (supplementary)
+            'DFII20': 17,     # Q - 20yr TIPS (supplementary)
+            'DFII30': 18,     # R - 30yr TIPS (supplementary)
+        }
+        
+        client = FREDClient()
+        
+        # Download file
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        logger.info(f"Downloading file...")
+        google_drive.download_file(file_id, tmp_path)
+        
+        wb = openpyxl.load_workbook(tmp_path)
+        
+        if 'Data' not in wb.sheetnames:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'Data sheet not found'}), 404
+        
+        ws = wb['Data']
+        
+        # Fetch data from FRED
+        logger.info("Fetching data from FRED...")
+        
+        all_series_data = {}
+        for series_id in all_series.keys():
+            try:
+                data = client.get_series(series_id, limit=2000, sort_order='desc')
+                
+                if data and 'observations' in data:
+                    df = pd.DataFrame(data['observations'])
+                    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
+                    df['value'] = pd.to_numeric(df['value'], errors='coerce')
+                    df = df.dropna(subset=['date', 'value'])
+                    
+                    all_series_data[series_id] = df
+                    logger.info(f"{series_id}: {len(df)} obs")
+                    
+            except Exception as e:
+                logger.error(f"Error fetching {series_id}: {e}")
+        
+        # Get intersection of dates for MAIN series only
+        main_dates = None
+        for series_id in main_series:
+            if series_id in all_series_data:
+                series_dates = set(all_series_data[series_id]['date'].tolist())
+                if main_dates is None:
+                    main_dates = series_dates
+                else:
+                    main_dates = main_dates.intersection(series_dates)
+        
+        if not main_dates:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'No complete data for main series'}), 500
+        
+        # Sort DESCENDING
+        sorted_dates = sorted(list(main_dates), reverse=True)
+        
+        logger.info(f"Writing {len(sorted_dates)} complete rows...")
+        
+        # Write data
+        for i, date in enumerate(sorted_dates):
+            row_num = 4 + i
+            
+            ws.cell(row=row_num, column=1, value=date)
+            
+            for series_id, col_num in all_series.items():
+                if series_id in all_series_data:
+                    series_df = all_series_data[series_id]
+                    matches = series_df[series_df['date'] == date]
+                    if len(matches) > 0:
+                        ws.cell(row=row_num, column=col_num, value=float(matches.iloc[0]['value']))
+            
+            if (i + 1) % 500 == 0:
+                logger.info(f"Progress: {i+1}/{len(sorted_dates)}")
+        
+        logger.info(f"Wrote {len(sorted_dates)} rows")
+        
+        # Create professional charts
+        logger.info("Creating charts...")
+        
+        # Find or create chart sheets
+        chart_configs = [
+            {
+                'sheet_name': '10yr',
+                'title': '10-Year Treasury Yield',
+                'data_col': 11,  # Column K
+                'color': '0070C0',
+                'y_axis_title': 'Yield (%)'
+            },
+            {
+                'sheet_name': '2yr',
+                'title': '2-Year Treasury Yield', 
+                'data_col': 7,  # Column G
+                'color': 'C00000',
+                'y_axis_title': 'Yield (%)'
+            },
+            {
+                'sheet_name': '5yr',
+                'title': '5-Year Treasury Yield',
+                'data_col': 9,  # Column I
+                'color': '00B050',
+                'y_axis_title': 'Yield (%)'
+            },
+            {
+                'sheet_name': '30yr',
+                'title': '30-Year Treasury Yield',
+                'data_col': 13,  # Column M
+                'color': 'FFC000',
+                'y_axis_title': 'Yield (%)'
+            },
+        ]
+        
+        for config in chart_configs:
+            sheet_name = config['sheet_name']
+            
+            # Create or get sheet
+            if sheet_name in wb.sheetnames:
+                chart_ws = wb[sheet_name]
+                # Clear existing charts
+                chart_ws._charts = []
+            else:
+                chart_ws = wb.create_sheet(sheet_name)
+            
+            # Create chart
+            chart = LineChart()
+            chart.title = config['title']
+            chart.style = 2
+            chart.y_axis.title = config['y_axis_title']
+            chart.x_axis.title = 'Date'
+            
+            # Data references (from Data sheet)
+            data = Reference(ws, min_col=config['data_col'], min_row=4, max_row=4+len(sorted_dates)-1)
+            dates = Reference(ws, min_col=1, min_row=4, max_row=4+len(sorted_dates)-1)
+            
+            chart.add_data(data, titles_from_data=False)
+            chart.set_categories(dates)
+            
+            # Styling
+            series = chart.series[0]
+            series.graphicalProperties.line.solidFill = config['color']
+            series.graphicalProperties.line.width = 20000  # Line width
+            series.smooth = True  # Smooth line
+            
+            # Remove markers for cleaner look
+            series.marker = Marker('none')
+            
+            # Chart size
+            chart.width = 20
+            chart.height = 10
+            
+            # Add to sheet
+            chart_ws.add_chart(chart, "A1")
+            
+            logger.info(f"Created chart for {sheet_name}")
+        
+        # Create Yield Curve chart
+        logger.info("Creating Yield Curve chart...")
+        
+        if 'Yield Curve' in wb.sheetnames:
+            curve_ws = wb['Yield Curve']
+            curve_ws._charts = []
+        else:
+            curve_ws = wb.create_sheet('Yield Curve')
+        
+        curve_chart = LineChart()
+        curve_chart.title = 'Treasury Yield Curve (Current)'
+        curve_chart.style = 2
+        curve_chart.y_axis.title = 'Yield (%)'
+        curve_chart.x_axis.title = 'Maturity'
+        
+        # Use most recent date (row 4) for all maturities
+        # Create data on the curve sheet itself
+        maturities = ['3mo', '6mo', '1yr', '2yr', '3yr', '5yr', '7yr', '10yr', '20yr', '30yr']
+        columns = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13]  # D through M
+        
+        # Write maturity labels and values
+        for idx, (mat, col) in enumerate(zip(maturities, columns)):
+            curve_ws.cell(row=1, column=idx+1, value=mat)
+            # Get value from Data sheet row 4
+            value = ws.cell(row=4, column=col).value
+            curve_ws.cell(row=2, column=idx+1, value=value)
+        
+        # Create chart from this data
+        data = Reference(curve_ws, min_col=1, min_row=2, max_col=len(maturities))
+        cats = Reference(curve_ws, min_col=1, min_row=1, max_col=len(maturities))
+        
+        curve_chart.add_data(data, titles_from_data=False)
+        curve_chart.set_categories(cats)
+        
+        series = curve_chart.series[0]
+        series.graphicalProperties.line.solidFill = '0070C0'
+        series.graphicalProperties.line.width = 25000
+        series.smooth = False
+        
+        curve_chart.width = 20
+        curve_chart.height = 10
+        
+        curve_ws.add_chart(curve_chart, "A4")
+        
+        logger.info("Created Yield Curve chart")
+        
+        # Save
+        logger.info("Saving workbook...")
+        wb.save(tmp_path)
+        wb.close()
+        
+        # Upload
+        logger.info("Uploading to Google Drive...")
+        google_drive.upload_file(tmp_path, file_id=file_id)
+        
+        os.remove(tmp_path)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Backfilled {len(sorted_dates)} complete rows + created charts',
+            'rows_written': len(sorted_dates),
+            'date_range': f"{sorted_dates[-1].strftime('%Y-%m-%d')} to {sorted_dates[0].strftime('%Y-%m-%d')}",
+            'main_series': main_series,
+            'strategy': 'Complete main series data only (no blank rows)',
+            'charts_created': len(chart_configs) + 1,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
 @app.route('/macro/analyze-data-sheet', methods=['GET'])
 def analyze_data_sheet():
     """
@@ -1474,6 +1747,7 @@ def not_found(error):
             'POST /macro/backfill-yields-v2',
             'POST /macro/backfill-yields-v3',
             'POST /macro/backfill-yields-correct',
+            'POST /macro/backfill-yields-final',
             'GET /macro/inspect-yields',
             'GET /macro/analyze-data-sheet',
             'POST /stocks/test-screen',
