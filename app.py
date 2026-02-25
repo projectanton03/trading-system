@@ -1513,6 +1513,106 @@ def backfill_yields_final():
             'traceback': traceback.format_exc()
         }), 500
 
+@app.route('/macro/audit-all-templates', methods=['GET'])
+def audit_all_templates():
+    """
+    Audit ALL 51 macro templates - comprehensive gap analysis
+    """
+    try:
+        import openpyxl
+        import tempfile
+        from datetime import timedelta
+        
+        logger.info("Starting comprehensive audit...")
+        
+        templates = google_drive.list_files('templates')
+        logger.info(f"Found {len(templates)} templates")
+        
+        results = []
+        
+        for template in templates:
+            try:
+                file_id = template['id']
+                file_name = template['name']
+                
+                with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+                    tmp_path = tmp.name
+                
+                google_drive.download_file(file_id, tmp_path)
+                wb = openpyxl.load_workbook(tmp_path, data_only=True)
+                
+                best_result = None
+                
+                for sheet_name in wb.sheetnames:
+                    if any(skip in sheet_name.lower() for skip in ['notes', 'readme', 'info']):
+                        continue
+                    
+                    ws = wb[sheet_name]
+                    
+                    for col in range(1, 6):
+                        try:
+                            dates_found = []
+                            for row in range(1, 21):
+                                cell_value = ws.cell(row=row, column=col).value
+                                if isinstance(cell_value, datetime):
+                                    dates_found.append(cell_value)
+                            
+                            if len(dates_found) >= 5:
+                                total_rows = 0
+                                last_date = None
+                                first_date = None
+                                
+                                for row in range(1, min(ws.max_row + 1, 5000)):
+                                    cell_value = ws.cell(row=row, column=col).value
+                                    if isinstance(cell_value, datetime):
+                                        total_rows += 1
+                                        if first_date is None:
+                                            first_date = cell_value
+                                        last_date = cell_value
+                                
+                                if last_date:
+                                    today = datetime.now()
+                                    gap_days = (today - last_date).days
+                                    
+                                    result = {
+                                        'sheet': sheet_name,
+                                        'last_date': last_date.strftime('%Y-%m-%d'),
+                                        'gap_days': gap_days,
+                                        'gap_months': round(gap_days / 30.44, 1),
+                                        'total_rows': total_rows,
+                                        'needs_backfill': gap_days > 30
+                                    }
+                                    
+                                    if best_result is None or total_rows > best_result['total_rows']:
+                                        best_result = result
+                        except:
+                            continue
+                
+                wb.close()
+                os.remove(tmp_path)
+                
+                if best_result:
+                    results.append({'file_name': file_name, 'file_id': file_id, **best_result})
+                else:
+                    results.append({'file_name': file_name, 'file_id': file_id, 'status': 'no_dates'})
+                
+            except Exception as e:
+                results.append({'file_name': template['name'], 'status': 'error', 'error': str(e)})
+        
+        needs_backfill = [r for r in results if r.get('needs_backfill')]
+        
+        return jsonify({
+            'status': 'success',
+            'total': len(results),
+            'needs_backfill': len(needs_backfill),
+            'priority_list': sorted(needs_backfill, key=lambda x: x.get('gap_days', 0), reverse=True)[:15],
+            'all_results': results
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
 @app.route('/macro/fix-yield-charts', methods=['POST'])
 def fix_yield_charts():
     """
