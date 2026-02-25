@@ -1513,6 +1513,117 @@ def backfill_yields_final():
             'traceback': traceback.format_exc()
         }), 500
 
+@app.route('/macro/fix-yield-charts', methods=['POST'])
+def fix_yield_charts():
+    """
+    Fix/recreate ALL yield charts with correct Y-axis formatting
+    """
+    try:
+        import openpyxl
+        from openpyxl.chart import LineChart, Reference
+        from openpyxl.chart.marker import Marker
+        import tempfile
+        
+        logger.info("Fixing all yield charts...")
+        
+        file_id = '1I3f36ghjh-NpI_EyhlZ9JTNUnGIWDkg4'
+        
+        # Download file
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        google_drive.download_file(file_id, tmp_path)
+        wb = openpyxl.load_workbook(tmp_path)
+        
+        if 'Data' not in wb.sheetnames:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'Data sheet not found'}), 404
+        
+        ws = wb['Data']
+        
+        # Find how many data rows we have
+        last_row = 4
+        while ws.cell(row=last_row, column=1).value is not None:
+            last_row += 1
+        last_row -= 1
+        
+        logger.info(f"Found {last_row - 3} data rows")
+        
+        # Define ALL series charts
+        chart_configs = [
+            {'sheet_name': 'Fed Funds', 'title': 'Federal Funds Rate', 'data_col': 2, 'color': '7030A0'},
+            {'sheet_name': '1mo', 'title': '1-Month Treasury Yield', 'data_col': 3, 'color': 'FF6B6B'},
+            {'sheet_name': '3mo', 'title': '3-Month Treasury Yield', 'data_col': 4, 'color': '4ECDC4'},
+            {'sheet_name': '6mo', 'title': '6-Month Treasury Yield', 'data_col': 5, 'color': '45B7D1'},
+            {'sheet_name': '1yr', 'title': '1-Year Treasury Yield', 'data_col': 6, 'color': '96CEB4'},
+            {'sheet_name': '2yr', 'title': '2-Year Treasury Yield', 'data_col': 7, 'color': 'C00000'},
+            {'sheet_name': '3yr', 'title': '3-Year Treasury Yield', 'data_col': 8, 'color': 'FFEAA7'},
+            {'sheet_name': '5yr', 'title': '5-Year Treasury Yield', 'data_col': 9, 'color': '00B050'},
+            {'sheet_name': '7yr', 'title': '7-Year Treasury Yield', 'data_col': 10, 'color': 'DDA15E'},
+            {'sheet_name': '10yr', 'title': '10-Year Treasury Yield', 'data_col': 11, 'color': '0070C0'},
+            {'sheet_name': '20yr', 'title': '20-Year Treasury Yield', 'data_col': 12, 'color': 'BC6C25'},
+            {'sheet_name': '30yr', 'title': '30-Year Treasury Yield', 'data_col': 13, 'color': 'FFC000'},
+            {'sheet_name': '5yr TIPS', 'title': '5-Year TIPS Yield', 'data_col': 14, 'color': '8E44AD'},
+            {'sheet_name': '7yr TIPS', 'title': '7-Year TIPS Yield', 'data_col': 15, 'color': '9B59B6'},
+            {'sheet_name': '10yr TIPS', 'title': '10-Year TIPS Yield', 'data_col': 16, 'color': 'A569BD'},
+            {'sheet_name': '20yr TIPS', 'title': '20-Year TIPS Yield', 'data_col': 17, 'color': 'BB8FCE'},
+            {'sheet_name': '30yr TIPS', 'title': '30-Year TIPS Yield', 'data_col': 18, 'color': 'D2B4DE'},
+        ]
+        
+        charts_created = 0
+        
+        for config in chart_configs:
+            sheet_name = config['sheet_name']
+            
+            if sheet_name in wb.sheetnames:
+                chart_ws = wb[sheet_name]
+                chart_ws._charts = []
+            else:
+                chart_ws = wb.create_sheet(sheet_name)
+            
+            chart = LineChart()
+            chart.title = config['title']
+            chart.style = 2
+            chart.y_axis.title = 'Yield (%)'
+            chart.x_axis.title = 'Date'
+            
+            data = Reference(ws, min_col=config['data_col'], min_row=4, max_row=last_row)
+            dates = Reference(ws, min_col=1, min_row=4, max_row=last_row)
+            
+            chart.add_data(data, titles_from_data=False)
+            chart.set_categories(dates)
+            
+            series = chart.series[0]
+            series.graphicalProperties.line.solidFill = config['color']
+            series.graphicalProperties.line.width = 20000
+            series.smooth = True
+            series.marker = Marker('none')
+            
+            chart.width = 20
+            chart.height = 10
+            
+            chart_ws.add_chart(chart, "A1")
+            charts_created += 1
+        
+        wb.save(tmp_path)
+        wb.close()
+        
+        google_drive.upload_file(tmp_path, file_id=file_id)
+        os.remove(tmp_path)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Fixed {charts_created} charts',
+            'charts_fixed': charts_created,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
 @app.route('/macro/analyze-data-sheet', methods=['GET'])
 def analyze_data_sheet():
     """
