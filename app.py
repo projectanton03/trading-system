@@ -1525,7 +1525,12 @@ def audit_all_templates():
         
         logger.info("Starting comprehensive audit...")
         
-        templates = google_drive.list_files('templates')
+        # Get template list from /macro/templates endpoint
+        import requests
+        response = requests.get(f"{request.url_root}macro/templates")
+        templates_data = response.json()
+        templates = templates_data.get('templates', [])
+        
         logger.info(f"Found {len(templates)} templates")
         
         results = []
