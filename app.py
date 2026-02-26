@@ -1618,6 +1618,110 @@ def audit_all_templates():
         import traceback
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
+@app.route('/macro/backfill-from-csv', methods=['POST'])
+def backfill_from_csv():
+    """
+    Generic CSV backfill tool for any Excel time series file
+    """
+    try:
+        import openpyxl
+        import tempfile
+        import csv
+        from io import StringIO
+        
+        logger.info("Starting CSV backfill...")
+        
+        data = request.get_json()
+        file_id = data.get('file_id')
+        csv_data = data.get('csv_data')
+        column_mapping = data.get('column_mapping', {})
+        date_col_csv = data.get('date_column_in_csv', 'date')
+        date_col_excel = data.get('date_column_in_excel', 1)
+        has_serial = data.get('has_serial_numbers', False)
+        
+        if not file_id or not csv_data:
+            return jsonify({'error': 'file_id and csv_data required'}), 400
+        
+        # Parse CSV
+        csv_reader = csv.DictReader(StringIO(csv_data))
+        csv_rows = list(csv_reader)
+        
+        logger.info(f"Parsed {len(csv_rows)} rows from CSV")
+        
+        # Download Excel
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        google_drive.download_file(file_id, tmp_path)
+        wb = openpyxl.load_workbook(tmp_path)
+        
+        if 'Data' not in wb.sheetnames:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'Data sheet not found'}), 404
+        
+        ws = wb['Data']
+        
+        # Convert CSV to date-indexed dict
+        csv_data_dict = {}
+        for row in csv_rows:
+            date_str = row[date_col_csv]
+            try:
+                date_obj = pd.to_datetime(date_str).to_pydatetime()
+                csv_data_dict[date_obj] = row
+            except:
+                continue
+        
+        # Sort descending
+        sorted_dates = sorted(csv_data_dict.keys(), reverse=True)
+        
+        logger.info(f"Writing {len(sorted_dates)} rows...")
+        
+        # Write data
+        rows_written = 0
+        for i, date in enumerate(sorted_dates):
+            row_num = 4 + i
+            csv_row = csv_data_dict[date]
+            
+            # Write date
+            ws.cell(row=row_num, column=date_col_excel, value=date)
+            
+            # Write serial if needed
+            if has_serial:
+                ws.cell(row=row_num, column=1, value=i + 1)
+            
+            # Write values
+            for csv_col_name, excel_col_num in column_mapping.items():
+                value = csv_row.get(csv_col_name)
+                if value:
+                    try:
+                        ws.cell(row=row_num, column=excel_col_num, value=float(value))
+                    except:
+                        ws.cell(row=row_num, column=excel_col_num, value=value)
+            
+            rows_written += 1
+        
+        logger.info(f"Wrote {rows_written} rows")
+        
+        wb.save(tmp_path)
+        wb.close()
+        
+        google_drive.upload_file(tmp_path, file_id=file_id)
+        os.remove(tmp_path)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Backfilled {rows_written} rows from CSV',
+            'rows_written': rows_written,
+            'date_range': f"{sorted_dates[-1].strftime('%Y-%m-%d')} to {sorted_dates[0].strftime('%Y-%m-%d')}",
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"CSV backfill error: {e}")
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
 @app.route('/macro/fix-yield-charts', methods=['POST'])
 def fix_yield_charts():
     """
