@@ -2158,6 +2158,51 @@ def test_telegram():
         return jsonify({'error': str(e)}), 500
 
 #═══════════════════════════════════════════════════════════════════════════════
+# MACRO ANALYSIS ENGINE
+#═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/macro/analyze-regime', methods=['GET'])
+def analyze_macro_regime():
+    """
+    Analyze current macro regime and recommend sectors
+    Uses leading indicators from templates to determine:
+    - Current regime (EXPANSION, LATE_CYCLE, RECESSION, RECOVERY)
+    - Confidence level
+    - Recommended long/short sectors
+    """
+    try:
+        from services.macro_analysis import MacroAnalyzer
+        
+        logger.info("Analyzing macro regime...")
+        
+        # Initialize analyzer
+        analyzer = MacroAnalyzer(excel_handler, google_drive)
+        
+        # Run analysis
+        result = analyzer.analyze_regime()
+        
+        logger.info(f"Regime: {result['regime']} ({result['confidence']:.0%} confidence)")
+        
+        return jsonify({
+            'status': 'success',
+            'regime': result['regime'],
+            'confidence': result['confidence'],
+            'long_sectors': result['long_sectors'],
+            'short_sectors': result['short_sectors'],
+            'all_scores': result['scores'],
+            'indicators': result['indicators'],
+            'timestamp': result['timestamp']
+        })
+        
+    except Exception as e:
+        logger.error(f"Error analyzing regime: {e}")
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+#═══════════════════════════════════════════════════════════════════════════════
 # ERROR HANDLERS
 #═══════════════════════════════════════════════════════════════════════════════
 
