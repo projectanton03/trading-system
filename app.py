@@ -1643,7 +1643,13 @@ def backfill_umcsi():
             tmp_path = tmp.name
         
         google_drive.download_file(file_id, tmp_path)
-        wb = openpyxl.load_workbook(tmp_path)
+        
+        # Load without charts to avoid corruption errors
+        wb = openpyxl.load_workbook(tmp_path, keep_vba=False, data_only=False, keep_links=False)
+        
+        # Remove all charts to prevent save errors
+        for sheet in wb.worksheets:
+            sheet._charts = []
         
         if 'UMCSI_VS_SP500' not in wb.sheetnames:
             wb.close()
