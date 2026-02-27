@@ -1618,6 +1618,113 @@ def audit_all_templates():
         import traceback
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
+@app.route('/macro/backfill-umcsi', methods=['POST'])
+def backfill_umcsi():
+    """
+    Backfill UMCSI (University of Michigan Consumer Sentiment)
+    """
+    try:
+        import openpyxl
+        import tempfile
+        from services.fred_api import FREDClient
+        
+        logger.info("Starting UMCSI backfill...")
+        
+        file_id = '18ExFmLHORm7boVpCzmNR7AZYK5RQ68-T'
+        
+        series_mapping = {
+            'UMCSENT': 2,  # UMCSI
+            'SP500': 3,    # S&P 500
+        }
+        
+        client = FREDClient()
+        
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        google_drive.download_file(file_id, tmp_path)
+        wb = openpyxl.load_workbook(tmp_path)
+        
+        if 'UMCSI_VS_SP500' not in wb.sheetnames:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'UMCSI_VS_SP500 sheet not found'}), 404
+        
+        ws = wb['UMCSI_VS_SP500']
+        
+        logger.info("Fetching FRED data...")
+        
+        all_series_data = {}
+        for series_id in series_mapping.keys():
+            try:
+                data = client.get_series(series_id, limit=2000, sort_order='desc')
+                
+                if data and 'observations' in data:
+                    df = pd.DataFrame(data['observations'])
+                    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
+                    df['value'] = pd.to_numeric(df['value'], errors='coerce')
+                    df = df.dropna(subset=['date', 'value'])
+                    df['date'] = df['date'].dt.to_period('M').dt.to_timestamp()
+                    
+                    all_series_data[series_id] = df
+                    logger.info(f"{series_id}: {len(df)} obs")
+                    
+            except Exception as e:
+                logger.error(f"Error: {e}")
+        
+        if 'UMCSENT' not in all_series_data:
+            wb.close()
+            os.remove(tmp_path)
+            return jsonify({'error': 'UMCSENT not available'}), 500
+        
+        umcsi_dates = set(all_series_data['UMCSENT']['date'].tolist())
+        sorted_dates = sorted(list(umcsi_dates), reverse=True)
+        
+        logger.info(f"Writing {len(sorted_dates)} rows...")
+        
+        start_row = 2
+        rows_written = 0
+        
+        for i, date in enumerate(sorted_dates):
+            row_num = start_row + i
+            
+            date_str = date.strftime('%b-%y')
+            ws.cell(row=row_num, column=1, value=date_str)
+            
+            if 'UMCSENT' in all_series_data:
+                df = all_series_data['UMCSENT']
+                matches = df[df['date'] == date]
+                if len(matches) > 0:
+                    ws.cell(row=row_num, column=2, value=float(matches.iloc[0]['value']))
+            
+            if 'SP500' in all_series_data:
+                df = all_series_data['SP500']
+                matches = df[df['date'] == date]
+                if len(matches) > 0:
+                    ws.cell(row=row_num, column=3, value=float(matches.iloc[0]['value']))
+            
+            rows_written += 1
+        
+        logger.info(f"Wrote {rows_written} rows")
+        
+        wb.save(tmp_path)
+        wb.close()
+        
+        google_drive.upload_file(tmp_path, file_id=file_id)
+        os.remove(tmp_path)
+        
+        return jsonify({
+            'status': 'success',
+            'rows_written': rows_written,
+            'date_range': f"{sorted_dates[-1].strftime('%Y-%m')} to {sorted_dates[0].strftime('%Y-%m')}",
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
 @app.route('/macro/backfill-from-csv', methods=['POST'])
 def backfill_from_csv():
     """
