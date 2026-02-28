@@ -31,7 +31,7 @@ class StockScreener:
                 'apikey': self.api_key
             }
             
-            response = requests.get(self.base_url, params=params, timeout=10)
+            response = requests.get(self.base_url, params=params, timeout=5)
             data = response.json()
             
             if 'Symbol' not in data:
@@ -81,7 +81,7 @@ class StockScreener:
         for ticker in sector_tickers:
             try:
                 # Rate limiting (Alpha Vantage: 5 calls/min on free tier)
-                time.sleep(12)  # ~5 per minute
+                time.sleep(1)  # ~5 per minute
                 
                 stock = self.get_company_overview(ticker)
                 
@@ -193,7 +193,7 @@ class StockScreener:
         
         for ticker in sector_tickers:
             try:
-                time.sleep(12)
+                time.sleep(1)
                 
                 stock = self.get_company_overview(ticker)
                 
