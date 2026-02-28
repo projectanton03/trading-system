@@ -2203,6 +2203,204 @@ def analyze_macro_regime():
         }), 500
 
 #═══════════════════════════════════════════════════════════════════════════════
+# STOCK SCREENING SYSTEM
+#═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/stocks/load-tickers', methods=['GET'])
+def load_stock_tickers():
+    """
+    Load ticker list from US_Sector_Data Excel file
+    Returns tickers organized by sector
+    """
+    try:
+        import openpyxl
+        import tempfile
+        
+        logger.info("Loading stock tickers from US_Sector_Data...")
+        
+        file_id = '11UwhrI8uUdr7ngWy_87rizWBEejLCdqo'
+        
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        google_drive.download_file(file_id, tmp_path)
+        wb = openpyxl.load_workbook(tmp_path, data_only=True, keep_vba=False)
+        
+        # Get the main sheet
+        ws = wb['US Stock Screener >$1bn Mkt Cap']
+        
+        # Read tickers and sectors
+        tickers_by_sector = {}
+        all_tickers = []
+        
+        for row in ws.iter_rows(min_row=2, max_row=1000, values_only=True):
+            ticker = row[0]  # Column A
+            sector = row[2]  # Column C - NAICS Sector Name
+            
+            if not ticker or not sector:
+                continue
+            
+            ticker = str(ticker).strip().upper()
+            sector = str(sector).strip()
+            
+            all_tickers.append(ticker)
+            
+            if sector not in tickers_by_sector:
+                tickers_by_sector[sector] = []
+            tickers_by_sector[sector].append(ticker)
+        
+        wb.close()
+        os.remove(tmp_path)
+        
+        logger.info(f"Loaded {len(all_tickers)} tickers across {len(tickers_by_sector)} sectors")
+        
+        return jsonify({
+            'status': 'success',
+            'total_tickers': len(all_tickers),
+            'sectors': list(tickers_by_sector.keys()),
+            'tickers_by_sector': tickers_by_sector,
+            'sample_tickers': all_tickers[:10]
+        })
+        
+    except Exception as e:
+        logger.error(f"Error loading tickers: {e}")
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
+
+@app.route('/stocks/screen-longs', methods=['POST'])
+def screen_long_candidates():
+    """
+    Screen for long candidates in specified sectors
+    Request body: {
+        "sectors": ["Manufacturing", "Finance and Insurance"],
+        "max_stocks": 10
+    }
+    """
+    try:
+        from services.stock_screener import StockScreener
+        
+        data = request.get_json() or {}
+        target_sectors = data.get('sectors', [])
+        max_stocks = data.get('max_stocks', 10)
+        
+        logger.info(f"Screening for longs in sectors: {target_sectors}")
+        
+        # Get Alpha Vantage key
+        alpha_key = os.environ.get('ALPHA_VANTAGE_KEY')
+        if not alpha_key:
+            return jsonify({'error': 'Alpha Vantage API key not configured'}), 500
+        
+        # Load tickers from Excel
+        import openpyxl
+        import tempfile
+        
+        file_id = '11UwhrI8uUdr7ngWy_87rizWBEejLCdqo'
+        
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        google_drive.download_file(file_id, tmp_path)
+        wb = openpyxl.load_workbook(tmp_path, data_only=True, keep_vba=False)
+        ws = wb['US Stock Screener >$1bn Mkt Cap']
+        
+        # Get tickers for target sectors
+        target_tickers = []
+        for row in ws.iter_rows(min_row=2, max_row=500, values_only=True):
+            ticker = row[0]
+            sector = row[2]
+            
+            if ticker and sector and sector in target_sectors:
+                target_tickers.append(str(ticker).strip().upper())
+        
+        wb.close()
+        os.remove(tmp_path)
+        
+        logger.info(f"Found {len(target_tickers)} tickers in target sectors")
+        
+        # Screen with API
+        screener = StockScreener(alpha_key)
+        
+        # Limit to avoid long runtime (API rate limits)
+        tickers_to_screen = target_tickers[:max_stocks]
+        
+        logger.info(f"Screening {len(tickers_to_screen)} stocks (limited from {len(target_tickers)})")
+        
+        candidates = screener.screen_longs(tickers_to_screen)
+        
+        return jsonify({
+            'status': 'success',
+            'candidates_found': len(candidates),
+            'total_screened': len(tickers_to_screen),
+            'candidates': candidates
+        })
+        
+    except Exception as e:
+        logger.error(f"Error screening longs: {e}")
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
+
+@app.route('/stocks/screen-shorts', methods=['POST'])
+def screen_short_candidates():
+    """
+    Screen for short candidates in specified sectors
+    """
+    try:
+        from services.stock_screener import StockScreener
+        
+        data = request.get_json() or {}
+        target_sectors = data.get('sectors', [])
+        max_stocks = data.get('max_stocks', 10)
+        
+        logger.info(f"Screening for shorts in sectors: {target_sectors}")
+        
+        alpha_key = os.environ.get('ALPHA_VANTAGE_KEY')
+        if not alpha_key:
+            return jsonify({'error': 'Alpha Vantage API key not configured'}), 500
+        
+        # Load tickers
+        import openpyxl
+        import tempfile
+        
+        file_id = '11UwhrI8uUdr7ngWy_87rizWBEejLCdqo'
+        
+        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        google_drive.download_file(file_id, tmp_path)
+        wb = openpyxl.load_workbook(tmp_path, data_only=True, keep_vba=False)
+        ws = wb['US Stock Screener >$1bn Mkt Cap']
+        
+        target_tickers = []
+        for row in ws.iter_rows(min_row=2, max_row=500, values_only=True):
+            ticker = row[0]
+            sector = row[2]
+            
+            if ticker and sector and sector in target_sectors:
+                target_tickers.append(str(ticker).strip().upper())
+        
+        wb.close()
+        os.remove(tmp_path)
+        
+        tickers_to_screen = target_tickers[:max_stocks]
+        
+        screener = StockScreener(alpha_key)
+        candidates = screener.screen_shorts(tickers_to_screen)
+        
+        return jsonify({
+            'status': 'success',
+            'candidates_found': len(candidates),
+            'total_screened': len(tickers_to_screen),
+            'candidates': candidates
+        })
+        
+    except Exception as e:
+        logger.error(f"Error screening shorts: {e}")
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
+#═══════════════════════════════════════════════════════════════════════════════
 # ERROR HANDLERS
 #═══════════════════════════════════════════════════════════════════════════════
 
